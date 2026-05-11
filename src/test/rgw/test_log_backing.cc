@@ -45,26 +45,31 @@ namespace logn = neorados::cls::log;
 
 namespace {
 inline constexpr int SHARDS = 3;
-std::string get_oid(uint64_t gen_id, int i) {
+std::string get_oid(uint64_t gen_id, const std::string& zg_id, int i) {
   return (gen_id > 0 ?
-	  fmt::format("shard@G{}.{}", gen_id, i) :
+	  (zg_id.empty() ?
+	    fmt::format("shard@G{}.{}", gen_id, i) :
+	    fmt::format("shard@G{}@Z{}.{}", gen_id, zg_id, i)) :
 	  fmt::format("shard.{}", i));
 }
 
-gen_oids get_oids(uint64_t gen_id) {
+gen_oids get_oids(uint64_t gen_id, const std::vector<std::string>& zg_ids) {
   gen_oids oids;
-  for (int i = 0; i < SHARDS; ++i) {
-    auto oid = get_oid(gen_id, i);
-    if (gen_id == 0 && i == 0)
-      oids[oid] = remove_action::clear;
-    else
-      oids[oid] = remove_action::remove;
+  for (const std::string& zg_id : zg_ids) {
+    for (int i = 0; i < SHARDS; ++i) {
+      auto oid = get_oid(gen_id, zg_id, i);
+      if (gen_id == 0 && i == 0)
+        oids[oid] = remove_action::clear;
+      else
+        oids[oid] = remove_action::remove;
+    }
   }
   return oids;
 }
 
 gen_oids get_gen0_oids() {
-  return get_oids(0);
+  std::vector<std::string> zg_ids{""};
+  return get_oids(0, zg_ids);
 }
 
 asio::awaitable<void> make_omap(neorados::RADOS& rados,
@@ -75,7 +80,7 @@ asio::awaitable<void> make_omap(neorados::RADOS& rados,
     buffer::list bl;
     encode(i, bl);
     op.exec(logn::add(ceph::real_clock::now(), {}, "meow", std::move(bl)));
-    co_await rados.execute(get_oid(0, i), loc, std::move(op),
+    co_await rados.execute(get_oid(0, "", i), loc, std::move(op),
 			   asio::use_awaitable);
   }
   co_return;
@@ -85,7 +90,7 @@ asio::awaitable<void> make_fifo(const DoutPrefixProvider* dpp,
 				neorados::RADOS& rados,
                                 const neorados::IOContext& loc) {
   for (int i = 0; i < SHARDS; ++i) {
-    auto fifo = co_await fifo::FIFO::create(dpp, rados, get_oid(0, i), loc,
+    auto fifo = co_await fifo::FIFO::create(dpp, rados, get_oid(0, "", i), loc,
 					    asio::use_awaitable);
     EXPECT_TRUE(fifo);
   }
@@ -150,7 +155,8 @@ public:
   using logback_generations::logback_generations;
 
   gen_oids get_gen_oids(const logback_generation& g) override {
-    return get_oids(g.gen_id);
+    std::vector<std::string> zg_ids{""};
+    return get_oids(g.gen_id, zg_ids);
   }
 
   void handle_init(entries_t e) override {

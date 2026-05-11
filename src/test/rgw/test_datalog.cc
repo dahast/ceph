@@ -134,7 +134,7 @@ protected:
     do {
       std::vector<rgw_data_change_log_entry> entries;
       std::tie(entries, marker, std::ignore) =
-	co_await datalog->list_entries(dpp, 1'000,
+	co_await datalog->list_entries(dpp, "", 1'000,
 				       std::move(marker));
       for (const auto& entry : entries) {
 	auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
@@ -159,11 +159,11 @@ protected:
   }
 
   auto oid(const BucketGen& bg) {
-    return datalog->get_oid(0, datalog->choose_oid(bg.shard));
+    return datalog->get_oid(0, "", datalog->choose_shard_id(bg.shard));
   }
 
   auto sem_set_oid(const BucketGen& bg) {
-    return datalog->get_sem_set_oid(datalog->choose_oid(bg.shard));
+    return datalog->get_sem_set_oid(datalog->choose_shard_id(bg.shard));
   }
 
   auto loc() {
@@ -181,7 +181,7 @@ protected:
 
   void add_to_semaphores(const BucketGen& bg) {
     std::unique_lock l(datalog->lock);
-    datalog->semaphores[datalog->choose_oid(bg.shard)].insert(bg.get_key());
+    datalog->semaphores[datalog->choose_shard_id(bg.shard)].insert(bg.get_key());
   }
 
 public:
@@ -211,7 +211,11 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, true, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(zg_id), std::move(zg_ids), false,
+      false, true, false);
     co_return std::move(datalog);
   }
 };
@@ -221,7 +225,11 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()), 
+      std::move(zg_id), std::move(zg_ids), false,
+      false, false, false);
     co_return std::move(datalog);
   }
 };
@@ -233,7 +241,11 @@ private:
     // can test iterated increment/decrement/list code.
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados(), 1, 7);
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, true, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(zg_id), std::move(zg_ids), false,
+      false, true, false);
     co_return std::move(datalog);
   }
 };

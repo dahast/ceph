@@ -11527,7 +11527,7 @@ next:
 	ret = run_coro(
 	  dpp(),
 	  context_pool,
-	  datalog_svc->list_entries(dpp(), shard_id, max_entries - count,
+	  datalog_svc->list_entries(dpp(), "", shard_id, max_entries - count,
 				    marker),
 	  std::tie(entries, marker, truncated),
 	  &errstr);
@@ -11535,7 +11535,7 @@ next:
 	ret = run_coro(
 	  dpp(),
 	  context_pool,
-	  datalog_svc->list_entries(dpp(), max_entries - count, log_marker),
+	  datalog_svc->list_entries(dpp(), "", max_entries - count, log_marker),
 	  std::tie(entries, log_marker, truncated),
 	  &errstr);
       }
@@ -11573,7 +11573,7 @@ next:
 
       int r = run_coro(dpp(), context_pool,
 		       static_cast<rgw::sal::RadosStore*>(driver)->svc()->
-		       datalog_rados->get_info(dpp(), i),
+		       datalog_rados->get_info(dpp(), "", i),
 		       info, &errstr);
 
       if (r < 0) {

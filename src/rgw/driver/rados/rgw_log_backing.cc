@@ -272,6 +272,7 @@ asio::awaitable<void> logback_generations::setup(const DoutPrefixProvider *dpp,
     // metadata.
     logback_generation g;
     g.gen_id = 0;
+    g.per_zonegroup = false;
     auto gen0_oids = get_gen_oids(g);
     auto type = co_await log_backing_type(dpp, rados, loc, gen0_oids, def);
     auto op = co_await async::async_dispatch(

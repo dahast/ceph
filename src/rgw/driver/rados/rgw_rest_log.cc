@@ -693,7 +693,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   op_ret = rgw::run_coro(
     this,
     store->get_io_context(),
-    store->svc()->datalog_rados->list_entries(this, shard_id,
+    store->svc()->datalog_rados->list_entries(this, "", shard_id,
 					      max_entries, marker),
     std::tie(entries, last_marker, truncated),
     "RGWDataChangesLog::list_entries", y);
@@ -703,7 +703,7 @@ void RGWOp_DATALog_List::execute(optional_yield y) {
   op_ret = rgw::run_coro(
     this,
     store->get_io_context(),
-    store->svc()->datalog_rados->get_info(this, shard_id),
+    store->svc()->datalog_rados->get_info(this, "", shard_id),
     info, "RGWDataChangesLog::get_info", y);
 
   last_update = info.last_update;
@@ -768,7 +768,7 @@ void RGWOp_DATALog_ShardInfo::execute(optional_yield y) {
 
   auto store = static_cast<rgw::sal::RadosStore*>(driver);
   op_ret = rgw::run_coro(this, store->get_io_context(),
-			 store->svc()->datalog_rados->get_info(this, shard_id),
+			 store->svc()->datalog_rados->get_info(this, "", shard_id),
 			 info, "RGWDataChangesLog::get_info", y);
 }
 
