@@ -51,6 +51,22 @@ std::string get_oid(uint64_t gen_id, int i) {
 	  fmt::format("shard.{}", i));
 }
 
+gen_oids get_oids(uint64_t gen_id) {
+  gen_oids oids;
+  for (int i = 0; i < SHARDS; ++i) {
+    auto oid = get_oid(gen_id, i);
+    if (gen_id == 0 && i == 0)
+      oids[oid] = remove_action::clear;
+    else
+      oids[oid] = remove_action::remove;
+  }
+  return oids;
+}
+
+gen_oids get_gen0_oids() {
+  return get_oids(0);
+}
+
 asio::awaitable<void> make_omap(neorados::RADOS& rados,
 				const neorados::IOContext& loc) {
   for (int i = 0; i < SHARDS; ++i) {
@@ -80,8 +96,7 @@ CORO_TEST_F(LogBacking, TestOmap, NeoRadosTest)
 {
   co_await make_omap(rados(), pool());
   auto stat = co_await log_backing_type(
-    dpp(), rados(), pool(), log_type::fifo, SHARDS,
-    [](int shard){ return get_oid(0, shard); });
+    dpp(), rados(), pool(), get_gen0_oids(), log_type::fifo);
   EXPECT_EQ(log_type::omap, stat);
 }
 
@@ -89,8 +104,7 @@ CORO_TEST_F(LogBacking, TestOmap, NeoRadosTest)
 CORO_TEST_F(LogBacking, TestOmapEmpty, NeoRadosTest)
 {
   auto stat = co_await log_backing_type(
-    dpp(), rados(), pool(), log_type::omap, SHARDS,
-    [](int shard){ return get_oid(0, shard); });
+    dpp(), rados(), pool(), get_gen0_oids(), log_type::omap);
   EXPECT_EQ(log_type::omap, stat);
 }
 
@@ -98,16 +112,14 @@ CORO_TEST_F(LogBacking, TestFIFO, NeoRadosTest)
 {
   co_await make_fifo(dpp(), rados(), pool());
   auto stat = co_await log_backing_type(
-    dpp(), rados(), pool(), log_type::fifo, SHARDS,
-    [](int shard){ return get_oid(0, shard); });
+    dpp(), rados(), pool(), get_gen0_oids(), log_type::fifo);
   EXPECT_EQ(log_type::fifo, stat);
 }
 
 CORO_TEST_F(LogBacking, TestFIFOEmpty, NeoRadosTest)
 {
   auto stat = co_await log_backing_type(
-    dpp(), rados(), pool(), log_type::fifo, SHARDS,
-    [](int shard){ return get_oid(0, shard); });
+    dpp(), rados(), pool(), get_gen0_oids(), log_type::fifo);
   EXPECT_EQ(log_type::fifo, stat);
 }
 
@@ -137,6 +149,10 @@ public:
 
   using logback_generations::logback_generations;
 
+  asio::awaitable<gen_oids> get_gen_oids(const logback_generation& g) override {
+    co_return get_oids(g.gen_id);
+  }
+
   void handle_init(entries_t e) override {
     got_entries = e;
   }
@@ -155,7 +171,7 @@ CORO_TEST_F(LogBacking, GenerationSingle, NeoRadosTest) {
   // and need addtional threads for the completion
   add_io_threads(2);
   auto lg = co_await logback_generations::init<generations>(
-    dpp(), rados(), "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados(), "foobar", pool(), log_type::fifo);
 
   EXPECT_FALSE(lg->got_entries.empty());
   EXPECT_EQ(0, lg->got_entries.begin()->first);
@@ -172,7 +188,7 @@ CORO_TEST_F(LogBacking, GenerationSingle, NeoRadosTest) {
   lg.reset();
 
   lg = co_await logback_generations::init<generations>(
-    dpp(), rados(), "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados(), "foobar", pool(), log_type::fifo);
 
   EXPECT_EQ(0, lg->got_entries.begin()->first);
 
@@ -193,7 +209,7 @@ CORO_TEST_F(LogBacking, GenerationSingle, NeoRadosTest) {
   lg.reset();
 
   lg = co_await logback_generations::init<generations>(
-    dpp(), rados(), "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados(), "foobar", pool(), log_type::fifo);
 
   EXPECT_EQ(2, lg->got_entries.size());
   EXPECT_EQ(0, lg->got_entries[0].gen_id);
@@ -212,7 +228,7 @@ CORO_TEST_F(LogBacking, GenerationSingle, NeoRadosTest) {
   lg.reset();
 
   lg = co_await logback_generations::init<generations>(
-    dpp(), rados(), "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados(), "foobar", pool(), log_type::fifo);
 
   EXPECT_EQ(1, lg->got_entries.size());
   EXPECT_EQ(1, lg->got_entries[1].gen_id);
@@ -224,7 +240,7 @@ CORO_TEST_F(LogBacking, GenerationWN, NeoRadosTest) {
   // see above
   add_io_threads(2);
   auto lg1 = co_await logback_generations::init<generations>(
-    dpp(), rados(), "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados(), "foobar", pool(), log_type::fifo);
 
   co_await lg1->new_backing(dpp(), log_type::omap);
 
@@ -239,7 +255,7 @@ CORO_TEST_F(LogBacking, GenerationWN, NeoRadosTest) {
     .build(asio_context, boost::asio::use_awaitable);
 
   auto lg2 = co_await logback_generations::init<generations>(
-    dpp(), rados2, "foobar", pool(), &get_oid, SHARDS, log_type::fifo);
+    dpp(), rados2, "foobar", pool(), log_type::fifo);
 
   EXPECT_EQ(2, lg2->got_entries.size());
 
