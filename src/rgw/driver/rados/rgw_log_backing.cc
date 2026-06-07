@@ -128,15 +128,14 @@ asio::awaitable<log_type> handle_dne(const DoutPrefixProvider *dpp,
 asio::awaitable<log_type>
 log_backing_type(const DoutPrefixProvider* dpp,
 		 neorados::RADOS rados,
-                 const neorados::IOContext& loc,
-		 log_type def,
-		 int shards,
-		 const fu2::unique_function<std::string(int) const>& get_oid)
+		 const neorados::IOContext& loc,
+		 const gen_oids& gen0_oids,
+		 log_type def)
 {
   auto check = shard_check::dne;
   bool fifo_unsupported = false;
-  for (int i = 0; i < shards; ++i) {
-    auto c = co_await probe_shard(dpp, rados, neorados::Object(get_oid(i)), loc,
+  for (auto& [oid, action] : gen0_oids) {
+    auto c = co_await probe_shard(dpp, rados, neorados::Object(oid), loc,
 				  fifo_unsupported);
     if (c == shard_check::corrupt)
       throw sys::system_error(EIO, sys::generic_category());
@@ -158,9 +157,11 @@ log_backing_type(const DoutPrefixProvider* dpp,
     throw sys::system_error(EIO, sys::system_category());
   }
 
-  if (check == shard_check::dne)
-    co_return co_await handle_dne(dpp, rados, get_oid(0), loc, def,
-				  fifo_unsupported);
+  if (check == shard_check::dne) {
+    assert(!gen0_oids.empty());
+    co_return co_await handle_dne(dpp, rados, gen0_oids.begin()->first,
+      loc, def, fifo_unsupported);
+  }
 
   co_return (check == shard_check::fifo ? log_type::fifo : log_type::omap);
 }
@@ -169,13 +170,10 @@ asio::awaitable<void> log_remove(
   const DoutPrefixProvider *dpp,
   neorados::RADOS rados,
   const neorados::IOContext& loc,
-  int shards,
-  const fu2::unique_function<std::string(int) const>& get_oid,
-  bool leave_zero)
+  const gen_oids& oids)
 {
   sys::error_code ec;
-  for (int i = 0; i < shards; ++i) {
-    auto oid = get_oid(i);
+  for (auto& [oid, action] : oids) {
     auto [info, part_header_size, part_entry_overhead]
       = co_await fifo::FIFO::get_meta(rados, oid, loc, std::nullopt,
 				      asio::redirect_error(asio::use_awaitable,
@@ -201,10 +199,10 @@ asio::awaitable<void> log_remove(
 			 << ": " << ec.message() << dendl;
     }
     neorados::WriteOp op;
-    if (i == 0 && leave_zero) {
-      // Leave shard 0 in existence, but remove contents and
-      // omap. cls_lock stores things in the xattrs. And sync needs to
-      // rendezvous with locks on generation 0 shard 0.
+    if (action == remove_action::clear) {
+      // Leave object in existence, but remove contents and omap.
+      // cls_lock stores things in the xattrs. And sync needs to
+      // rendezvous with locks on this object.
       op.set_omap_header({})
 	.clear_omap()
 	.truncate(0);
@@ -272,10 +270,10 @@ asio::awaitable<void> logback_generations::setup(const DoutPrefixProvider *dpp,
   if (must_create) {
     // Are we the first? Then create generation 0 and the generations
     // metadata.
-    auto type = co_await log_backing_type(dpp, rados, loc, def, shards,
-					  [this](int shard) {
-					    return this->get_oid(0, shard);
-					  });
+    logback_generation g;
+    g.gen_id = 0;
+    auto gen0_oids = get_gen_oids(g);
+    auto type = co_await log_backing_type(dpp, rados, loc, gen0_oids, def);
     auto op = co_await async::async_dispatch(
       strand,
       [this, type] {
@@ -319,10 +317,7 @@ asio::awaitable<void> logback_generations::setup(const DoutPrefixProvider *dpp,
       // generation zero, incremented, then erased generation zero,
       // don't leave generation zero lying around.
       if (l.gen_id != 0) {
-	co_await log_remove(dpp, rados, loc, shards,
-			    [this](int shard) {
-			      return this->get_oid(0, shard);
-			    }, true);
+	co_await log_remove(dpp, rados, loc, gen0_oids);
       }
       co_await async::async_dispatch(
 	strand,
@@ -630,10 +625,8 @@ logback_generations::remove_empty(const DoutPrefixProvider* dpp) {
       }, asio::use_awaitable);
     for (const auto& [gen_id, e] : es) {
       ceph_assert(e.pruned);
-      co_await log_remove(dpp, rados, loc, shards,
-			  [this, gen_id = gen_id](int shard) {
-			    return this->get_oid(gen_id, shard);
-			  }, (gen_id == 0));
+      auto oids = get_gen_oids(e);
+      co_await log_remove(dpp, rados, loc, oids);
       if (auto i = es2.find(gen_id); i != es2.end()) {
 	es2.erase(i);
       }

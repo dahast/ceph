@@ -144,11 +144,10 @@ public:
   RGWDataChangesOmap(neorados::RADOS r,
 		     neorados::IOContext loc,
 		     RGWDataChangesLog& datalog,
-		     uint64_t gen_id,
-		     int num_shards)
+		     uint64_t gen_id)
     : RGWDataChangesBE(r, std::move(loc), datalog, gen_id) {
-    oids.reserve(num_shards);
-    for (auto i = 0; i < num_shards; ++i) {
+    oids.reserve(datalog.get_num_shards());
+    for (auto i = 0; i < datalog.get_num_shards(); ++i) {
       oids.push_back(get_oid(i));
     }
   }
@@ -289,10 +288,9 @@ public:
   RGWDataChangesFIFO(neorados::RADOS r,
 		     neorados::IOContext loc,
 		     RGWDataChangesLog& datalog,
-		     uint64_t gen_id,
-		     int num_shards)
+		     uint64_t gen_id)
     : RGWDataChangesBE(r, std::move(loc), datalog, gen_id),
-      fifos(num_shards, [&r, &loc, this](std::size_t i, auto emplacer) {
+      fifos(datalog.get_num_shards(), [&r, &loc, this](std::size_t i, auto emplacer) {
 	emplacer.emplace(r, get_oid(i), loc);
       }) {}
   ~RGWDataChangesFIFO() override = default;
@@ -395,6 +393,20 @@ RGWDataChangesLog::RGWDataChangesLog(CephContext *cct, bool log_data,
       sem_max_keys(sem_max_keys ? *sem_max_keys : ss::max_keys) {}
 
 
+gen_oids DataLogBackends::get_gen_oids(const logback_generation& g) {
+  const std::string trim_lock_oid = datalog.get_trim_lock_oid();
+  gen_oids oids;
+  for (int i = 0; i < datalog.get_num_shards(); ++i) {
+    auto oid = datalog.get_oid(g.gen_id, i);
+    // clear trim_lock_oid only, don't delete it
+    if (oid == trim_lock_oid)
+      oids[oid] = remove_action::clear;
+    else
+      oids[oid] = remove_action::remove;
+  }
+  return oids;
+}
+
 void DataLogBackends::handle_init(entries_t e) {
   std::unique_lock l(m);
   for (const auto& [gen_id, gen] : e) {
@@ -413,12 +425,12 @@ void DataLogBackends::handle_init(entries_t e) {
       case log_type::omap:
 	emplace(gen_id,
 		boost::intrusive_ptr<RGWDataChangesBE>(
-		  new RGWDataChangesOmap(rados, loc, datalog, gen_id, shards)));
+		  new RGWDataChangesOmap(rados, loc, datalog, gen_id)));
 	break;
       case log_type::fifo:
 	emplace(gen_id,
 		boost::intrusive_ptr<RGWDataChangesBE>(
-		  new RGWDataChangesFIFO(rados, loc, datalog, gen_id, shards)));
+		  new RGWDataChangesFIFO(rados, loc, datalog, gen_id)));
 	break;
       default:
 	lderr(datalog.cct)
@@ -506,10 +518,7 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
 
   try {
     bes = co_await logback_generations::init<DataLogBackends>(
-      dpp, *rados, metadata_log_oid(), loc,
-      [this](uint64_t gen_id, int shard) {
-	return get_oid(gen_id, shard);
-      }, num_shards, log_type::fifo, *this);
+      dpp, *rados, metadata_log_oid(), loc, log_type::fifo, *this);
   } catch (const std::exception& e) {
     ldpp_dout(dpp, -1) << __PRETTY_FUNCTION__
 		       << ": Error initializing backends: " << e.what()
@@ -531,7 +540,7 @@ RGWDataChangesLog::start(const DoutPrefixProvider *dpp,
   }
   if (watch) {
     // Establish watch here so we won't be 'started up' until we're watching.
-    const auto oid = get_sem_set_oid(0);
+    const auto oid = get_recover_lock_oid();
     auto established = co_await establish_watch(dpp, oid);
     if (!established) {
       throw sys::system_error{ENOTCONN, sys::generic_category(),
@@ -682,7 +691,7 @@ asio::awaitable<void>
 RGWDataChangesLog::watch_loop()
 {
   const DoutPrefix dp(cct, dout_subsys, "rgw data changes log: ");
-  const auto oid = get_sem_set_oid(0);
+  const auto oid = get_recover_lock_oid();
   bool need_rewatch = false;
 
   while (!going_down()) {
@@ -885,6 +894,21 @@ std::string RGWDataChangesLog::get_sem_set_oid(int i) const {
   return fmt::format("_sem_set{}.{}", prefix, i);
 }
 
+std::string RGWDataChangesLog::metadata_log_oid() const {
+  return fmt::format("{}generations_metadata", prefix);
+}
+
+std::string RGWDataChangesLog::get_trim_lock_oid() const {
+  // historically use first data log shard of gen 0, keep the object name
+  // regardless of introduction of generations
+  return get_oid(0, 0);
+}
+
+std::string RGWDataChangesLog::get_recover_lock_oid() const {
+  // use sem_set shard 0
+  return get_sem_set_oid(0);
+}
+
 asio::awaitable<void>
 RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 			     const RGWBucketInfo& bucket_info,
@@ -1053,7 +1077,7 @@ DataLogBackends::list(const DoutPrefixProvider *dpp, int shard,
 		      std::span<rgw_data_change_log_entry> entries,
 		      std::string marker)
 {
-  assert(shard < shards);
+  assert(shard < datalog.get_num_shards());
   const auto [start_id, // Starting generation
 	      start_cursor // Cursor to be used when listing the
 			   // starting generation
@@ -1178,7 +1202,7 @@ asio::awaitable<void> DataLogBackends::trim_entries(
   const DoutPrefixProvider *dpp, int shard_id,
   std::string_view marker)
 {
-  assert(shard_id < shards);
+  assert(shard_id < datalog.get_num_shards());
   auto [target_gen, cursor] = cursorgen(std::string{marker});
   std::unique_lock l(m);
 
@@ -1544,7 +1568,7 @@ RGWDataChangesLog::gather_working_sets(
   }
   encode(rc, bl);
   auto [reply_map, missed_set] = co_await rados->notify(
-      get_sem_set_oid(0), loc, bl, 60s, asio::use_awaitable);
+      get_recover_lock_oid(), loc, bl, 60s, asio::use_awaitable);
   // If we didn't get an answer from someone, don't decrement anything.
   if (!missed_set.empty()) {
     ldpp_dout(dpp, 5) << "RGWDataChangesLog::gather_working_sets(): Missed responses: "

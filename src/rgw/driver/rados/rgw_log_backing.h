@@ -71,23 +71,28 @@ inline std::ostream& operator <<(std::ostream& m, const log_type& t) {
   return m << "log_type::UNKNOWN=" << static_cast<uint32_t>(t);
 }
 
+/// List of all oids of a generation.
+/// Value says what to do in case of remove.
+enum class remove_action {
+  remove,
+  clear
+};
+using gen_oids = std::map<std::string, remove_action>;
+
 /// Look over the shards in a log and determine the type.
 asio::awaitable<log_type>
 log_backing_type(const DoutPrefixProvider* dpp,
 		 neorados::RADOS rados,
-                 const neorados::IOContext& loc,
-		 log_type def,
-		 int shards,
-		 const fu2::unique_function<std::string(int) const>& get_oid);
+		 const neorados::IOContext& loc,
+		 const gen_oids& gen0_oids,
+		 log_type def);
 
 /// Remove all log shards and associated parts of fifos.
 asio::awaitable<void> log_remove(
   const DoutPrefixProvider *dpp,
   neorados::RADOS rados,
   const neorados::IOContext& loc,
-  int shards,
-  const fu2::unique_function<std::string(int) const>& get_oid,
-  bool leave_zero);
+  const gen_oids& oids);
 
 struct logback_generation {
   uint64_t gen_id = 0;
@@ -126,22 +131,13 @@ protected:
   logback_generations(
     neorados::RADOS rados,
     neorados::Object oid,
-    neorados::IOContext loc,
-    fu2::unique_function<std::string(uint64_t, int) const> get_oid,
-    int shards) noexcept
-    : rados(rados), loc(std::move(loc)), oid(oid), get_oid(std::move(get_oid)),
-      shards(shards) {}
+    neorados::IOContext loc) noexcept
+    : rados(rados), loc(std::move(loc)), oid(oid) {}
 
   uint64_t my_id = rados.instance_id();
 
 private:
   const std::string oid;
-  const fu2::unique_function<std::string(uint64_t, int) const> get_oid;
-
-protected:
-  const int shards;
-
-private:
 
   uint64_t watchcookie = 0;
 
@@ -186,12 +182,10 @@ public:
     neorados::RADOS r_,
     const neorados::Object& oid_,
     const neorados::IOContext& loc_,
-    fu2::unique_function<std::string(uint64_t, int) const>&& get_oid_,
-    int shards_, log_type def,
+    log_type def,
     Args&& ...args) {
     std::unique_ptr<T> lg{new T(r_, oid_, loc_,
-				std::move(get_oid_),
-				shards_, std::forward<Args>(args)...)};
+				std::forward<Args>(args)...)};
     co_await lg->setup(dpp, def);
     co_return lg;
   }
@@ -210,6 +204,11 @@ public:
   asio::awaitable<void> remove_empty(const DoutPrefixProvider *dpp);
 
   // Callbacks, to be defined by descendant.
+
+  /// Get list of object ids of a generation
+  ///
+  /// @param generation to remove
+  virtual gen_oids get_gen_oids(const logback_generation& g) = 0;
 
   /// Handle initialization on startup
   ///

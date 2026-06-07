@@ -211,11 +211,8 @@ class DataLogBackends final
   DataLogBackends(neorados::RADOS rados,
 		  const neorados::Object oid,
 		  const neorados::IOContext& loc,
-		  fu2::unique_function<std::string(
-		    uint64_t, int) const>&& get_oid,
-		  int shards, RGWDataChangesLog& datalog) noexcept
-    : logback_generations(rados, oid, loc, std::move(get_oid),
-			  shards), datalog(datalog) {}
+		  RGWDataChangesLog& datalog) noexcept
+    : logback_generations(rados, oid, loc), datalog(datalog) {}
 public:
 
   boost::intrusive_ptr<RGWDataChangesBE> head();
@@ -226,6 +223,7 @@ public:
        std::string marker);
   asio::awaitable<void> trim_entries(const DoutPrefixProvider *dpp, int shard_id,
 				     std::string_view marker);
+  gen_oids get_gen_oids(const logback_generation& g) override;
   void handle_init(entries_t e) override;
   void handle_new_gens(entries_t e) override;
   void handle_empty_to(uint64_t new_tail) override;
@@ -374,9 +372,6 @@ class RGWDataChangesLog {
 
   const int num_shards;
   std::string get_prefix() { return "data_log"; }
-  std::string metadata_log_oid() {
-    return get_prefix() + "generations_metadata";
-  }
   std::string prefix;
 
   std::mutex lock;
@@ -502,9 +497,16 @@ public:
   }
   // a marker that compares greater than any other
   std::string max_marker() const;
+
   std::string get_oid(uint64_t gen_id, int shard_id) const;
   std::string get_sem_set_oid(int shard_id) const;
+  std::string metadata_log_oid() const;
+  std::string get_trim_lock_oid() const;
+  std::string get_recover_lock_oid() const;
 
+  int get_num_shards() const {
+    return num_shards;
+  }
 
   asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>,
 			    std::string>>
