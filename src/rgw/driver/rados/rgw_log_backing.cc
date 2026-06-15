@@ -272,6 +272,7 @@ asio::awaitable<void> logback_generations::setup(const DoutPrefixProvider *dpp,
     // metadata.
     logback_generation g;
     g.gen_id = 0;
+    g.per_zonegroup = false;
     auto gen0_oids = co_await get_gen_oids(g);
     auto type = co_await log_backing_type(dpp, rados, loc, gen0_oids, def);
     auto op = co_await async::async_dispatch(
@@ -280,6 +281,7 @@ asio::awaitable<void> logback_generations::setup(const DoutPrefixProvider *dpp,
 	neorados::WriteOp op;
 	logback_generation l;
 	l.type = type;
+	l.per_zonegroup = false;
 	version.ver = 1;
 	static constexpr auto TAG_LEN = 24;
 	version.tag.clear();
@@ -494,7 +496,8 @@ asio::awaitable<void> logback_generations::watch()
 }
 
 asio::awaitable<void>
-logback_generations::new_backing(const DoutPrefixProvider* dpp, log_type type) {
+logback_generations::new_backing(const DoutPrefixProvider* dpp, log_type type,
+				 bool per_zonegroup) {
   static constexpr auto max_tries = 10;
   auto tries = 0;
   entries_t new_entries;
@@ -504,11 +507,12 @@ logback_generations::new_backing(const DoutPrefixProvider* dpp, log_type type) {
     canceled =
       co_await asio::co_spawn(
 	strand,
-	[](logback_generations& l, log_type type, entries_t& new_entries,
-	   const DoutPrefixProvider* dpp)
+	[](logback_generations& l, log_type type, bool per_zonegroup,
+	   entries_t& new_entries, const DoutPrefixProvider* dpp)
 	-> asio::awaitable<bool> {
 	  auto last = l.entries.end() - 1;
-	  if (last->second.type == type) {
+	  if (last->second.type == type &&
+	      last->second.per_zonegroup == per_zonegroup) {
 	    // Nothing to be done
 	    co_return false;
 	  }
@@ -516,11 +520,12 @@ logback_generations::new_backing(const DoutPrefixProvider* dpp, log_type type) {
 	  logback_generation newgen;
 	  newgen.gen_id = newgenid;
 	  newgen.type = type;
+	  newgen.per_zonegroup = per_zonegroup;
 	  new_entries.emplace(newgenid, newgen);
 	  auto es = l.entries;
 	  es.emplace(newgenid, std::move(newgen));
 	  co_return co_await l.write(dpp, std::move(es));
-	}(*this, type, new_entries, dpp),
+	}(*this, type, per_zonegroup, new_entries, dpp),
 	asio::use_awaitable);
     ++tries;
   } while (canceled && tries < max_tries);

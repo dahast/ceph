@@ -80,14 +80,15 @@ protected:
   }
 
   asio::awaitable<bc::flat_map<BucketGen, uint64_t>>
-  read_all_log(const DoutPrefixProvider* dpp) {
+  read_all_log(const DoutPrefixProvider* dpp,
+               const std::string& zg_id = "") {
     bc::flat_map<BucketGen, uint64_t> all_keys;
 
     RGWDataChangesLogMarker marker;
     do {
       std::vector<rgw_data_change_log_entry> entries;
       std::tie(entries, marker, std::ignore) =
-	co_await datalog->list_entries(dpp, 1'000,
+	co_await datalog->list_entries(dpp, zg_id, 1'000,
 				       std::move(marker));
       for (const auto& entry : entries) {
 	auto key = fmt::format("{}:{}", entry.entry.key, entry.entry.gen);
@@ -112,11 +113,11 @@ protected:
   }
 
   auto oid(const BucketGen& bg) {
-    return datalog->get_oid(0, datalog->choose_oid(bg.shard));
+    return datalog->get_oid(0, "", datalog->choose_shard_id(bg.shard));
   }
 
   auto sem_set_oid(const BucketGen& bg) {
-    return datalog->get_sem_set_oid(datalog->choose_oid(bg.shard));
+    return datalog->get_sem_set_oid(datalog->choose_shard_id(bg.shard));
   }
 
   auto loc() {
@@ -129,12 +130,12 @@ protected:
 
   void add_to_cur_cycle(const BucketGen& bg) {
     std::unique_lock l(datalog->lock);
-    datalog->cur_cycle.insert(bg);
+    datalog->cur_cycle[bg].insert("");
   }
 
   void add_to_semaphores(const BucketGen& bg) {
     std::unique_lock l(datalog->lock);
-    datalog->semaphores[datalog->choose_oid(bg.shard)].insert(bg.get_key());
+    datalog->semaphores[datalog->choose_shard_id(bg.shard)].insert(bg.get_key());
   }
 
 public:
@@ -160,7 +161,11 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, true, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(zg_id), std::move(zg_ids), false,
+      false, true, false);
     co_return std::move(datalog);
   }
 };
@@ -170,7 +175,11 @@ private:
   asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados());
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, false, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(zg_id), std::move(zg_ids), false,
+      false, false, false);
     co_return std::move(datalog);
   }
 };
@@ -182,9 +191,29 @@ private:
     // can test iterated increment/decrement/list code.
     auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
 						       rados(), 1, 7);
-    co_await datalog->start(dpp(), rgw_pool(pool_name()), false, true, false);
+    std::string zg_id = "testzg";
+    std::vector<std::string> zg_ids{zg_id};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(zg_id), std::move(zg_ids), false,
+      false, true, false);
     co_return std::move(datalog);
   }
+};
+
+// Two zonegroups, per_zonegroup=true.  Used to test per-zonegroup isolation.
+class DataLogPerZonegroup : public DataLogTestBase {
+private:
+  asio::awaitable<std::unique_ptr<RGWDataChangesLog>> create_datalog() override {
+    auto datalog = std::make_unique<RGWDataChangesLog>(rados().cct(), true,
+						       rados());
+    std::string own_zg = "zgA";
+    std::vector<std::string> zg_ids{"zgA", "zgB"};
+    co_await datalog->start(dpp(), rgw_pool(pool_name()),
+      std::move(own_zg), std::move(zg_ids), /*per_zonegroup=*/true,
+      false, true, false);
+    co_return std::move(datalog);
+  }
+
 };
 
 
@@ -464,5 +493,129 @@ CORO_TEST_F(DataLogBulky, BulkySemaphoresRecovery, DataLogBulky) {
   for (const auto& bg : bulky) {
     EXPECT_TRUE(log_entries.contains(bg));
   }
+  co_return;
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for OID naming helpers (use the pre-created datalog fixture)
+// ---------------------------------------------------------------------------
+
+CORO_TEST_F(DataLog, OidGen0HasNoGenerationSuffix, DataLogTest) {
+  EXPECT_EQ("data_log.0", datalog->get_oid(0, "", 0));
+  EXPECT_EQ("data_log.3", datalog->get_oid(0, "", 3));
+  // zg_id is ignored for gen 0
+  EXPECT_EQ("data_log.2", datalog->get_oid(0, "somezg", 2));
+  co_return;
+}
+
+CORO_TEST_F(DataLog, OidGen1NoZonegroupId, DataLogTest) {
+  EXPECT_EQ("data_log@G1.0", datalog->get_oid(1, "", 0));
+  EXPECT_EQ("data_log@G1.7", datalog->get_oid(1, "", 7));
+  co_return;
+}
+
+CORO_TEST_F(DataLog, OidGen1WithZonegroupId, DataLogTest) {
+  EXPECT_EQ("data_log@G1@ZzgA.0", datalog->get_oid(1, "zgA", 0));
+  EXPECT_EQ("data_log@G2@ZzgB.5", datalog->get_oid(2, "zgB", 5));
+  co_return;
+}
+
+CORO_TEST_F(DataLog, OidListPrefix, DataLogTest) {
+  EXPECT_EQ("data_log@G3@Z", datalog->get_oid_list_prefix(3));
+  EXPECT_EQ("data_log@G1@Z", datalog->get_oid_list_prefix(1));
+  co_return;
+}
+
+// ---------------------------------------------------------------------------
+// effective_zg_id: minimal mock backend carrying only the per_zonegroup flag.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct MockBE : public RGWDataChangesBE {
+  using RGWDataChangesBE::RGWDataChangesBE;
+  void prepare(ceph::real_time, const std::string&,
+	       ceph::buffer::list&&, entries&) override {}
+  asio::awaitable<void>
+  push(const DoutPrefixProvider*, const std::string&, int,
+       entries&&) override { co_return; }
+  void push(const DoutPrefixProvider*, const std::string&, int,
+	    ceph::real_time, const std::string&,
+	    ceph::buffer::list&&, asio::yield_context) override {}
+  asio::awaitable<std::tuple<std::span<rgw_data_change_log_entry>, std::string>>
+  list(const DoutPrefixProvider*, const std::string&, int,
+       std::span<rgw_data_change_log_entry> e, std::string) override {
+    co_return std::make_tuple(e.first(0), std::string{});
+  }
+  asio::awaitable<RGWDataChangesLogInfo>
+  get_info(const DoutPrefixProvider*, const std::string&, int) override {
+    co_return RGWDataChangesLogInfo{};
+  }
+  asio::awaitable<void>
+  trim(const DoutPrefixProvider*, const std::string&, int,
+       std::string_view) override { co_return; }
+  std::string_view max_marker() const override { return ""; }
+  asio::awaitable<bool> is_empty(const DoutPrefixProvider*) override {
+    co_return true;
+  }
+};
+} // anonymous namespace
+
+CORO_TEST_F(DataLog, EffectiveZgIdNotPerZonegroup, DataLogTest) {
+  // When be.per_zonegroup==false, effective_zg_id always returns "".
+  MockBE be{rados(), loc(), *datalog, 0, /*per_zonegroup=*/false};
+  EXPECT_EQ("", datalog->effective_zg_id(be, ""));
+  EXPECT_EQ("", datalog->effective_zg_id(be, "zgA"));
+  co_return;
+}
+
+CORO_TEST_F(DataLog, EffectiveZgIdPerZonegroupEmpty, DataLogTest) {
+  // When be.per_zonegroup==true and zg_id=="" → fall back to own_zonegroup_id.
+  MockBE be{rados(), loc(), *datalog, 1, /*per_zonegroup=*/true};
+  EXPECT_EQ(datalog->get_own_zonegroup_id(),
+	    datalog->effective_zg_id(be, ""));
+  co_return;
+}
+
+CORO_TEST_F(DataLog, EffectiveZgIdPerZonegroupExplicit, DataLogTest) {
+  // When be.per_zonegroup==true and an explicit zg_id is given, return it.
+  MockBE be{rados(), loc(), *datalog, 1, /*per_zonegroup=*/true};
+  EXPECT_EQ("zgB", datalog->effective_zg_id(be, "zgB"));
+  co_return;
+}
+
+// ---------------------------------------------------------------------------
+// Per-zonegroup isolation tests
+// ---------------------------------------------------------------------------
+
+CORO_TEST_F(DataLogPerZonegroup, IsolationBothZonegroupsSeeEntries,
+	    DataLogPerZonegroup) {
+  for (const auto& bg : ref) {
+    co_await add_entry(dpp(), bg);
+    co_await add_entry(dpp(), bg);
+  }
+  co_await renew_entries(dpp());
+
+  // add_entry fans out to all registered zonegroups, so both must see entries.
+  auto za = co_await read_all_log(dpp(), "zgA");
+  auto zb = co_await read_all_log(dpp(), "zgB");
+  for (const auto& bg : ref) {
+    EXPECT_TRUE(za.contains(bg)) << "zgA missing " << bg.get_key();
+    EXPECT_TRUE(zb.contains(bg)) << "zgB missing " << bg.get_key();
+  }
+  co_return;
+}
+
+CORO_TEST_F(DataLogPerZonegroup, EmptyZgIdFallsBackToOwnZonegroup,
+	    DataLogPerZonegroup) {
+  // list_entries with zg_id=="" must fall back to own_zonegroup_id ("zgA").
+  for (const auto& bg : ref) {
+    co_await add_entry(dpp(), bg);
+    co_await add_entry(dpp(), bg);
+  }
+  co_await renew_entries(dpp());
+
+  auto empty_zg = co_await read_all_log(dpp(), "");
+  auto own_zg   = co_await read_all_log(dpp(), "zgA");
+  EXPECT_EQ(empty_zg, own_zg);
   co_return;
 }

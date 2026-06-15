@@ -1560,7 +1560,7 @@ public:
 
 rgw_raw_obj datalog_oid_for_error_repo(RGWDataSyncCtx *sc, rgw::sal::RadosStore* driver,
                                       rgw_pool& pool, rgw_bucket_shard& bs) {
-  int datalog_shard = driver->svc()->datalog_rados->choose_oid(bs);
+  int datalog_shard = driver->svc()->datalog_rados->choose_shard_id(bs);
   string oid = RGWDataSyncStatusManager::shard_obj_name(sc->source_zone, datalog_shard);
   return rgw_raw_obj(pool, oid + ".retry");
   }
@@ -1656,7 +1656,7 @@ RGWCoroutine* data_sync_single_entry(RGWDataSyncCtx *sc, const rgw_bucket_shard&
 static ceph::real_time timestamp_for_bucket_shard(rgw::sal::RadosStore* driver,
                                                 const rgw_data_sync_status& sync_status,
                                                 const rgw_bucket_shard& bs) {
-  int datalog_shard = driver->svc()->datalog_rados->choose_oid(bs);
+  int datalog_shard = driver->svc()->datalog_rados->choose_shard_id(bs);
   auto status = sync_status.sync_markers.find(datalog_shard);
   if (status == sync_status.sync_markers.end()) {
     return ceph::real_clock::zero();
