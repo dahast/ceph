@@ -98,27 +98,35 @@ struct logback_generation {
   uint64_t gen_id = 0;
   log_type type;
   std::optional<ceph::real_time> pruned;
+  bool per_zonegroup;
 
   void encode(ceph::buffer::list& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 1, bl);
     encode(gen_id, bl);
     encode(type, bl);
     encode(pruned, bl);
+    encode(per_zonegroup, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
+    DECODE_START(2, bl);
     decode(gen_id, bl);
     decode(type, bl);
     decode(pruned, bl);
+    if (struct_v >= 2) {
+      decode(per_zonegroup, bl);
+    } else {
+      per_zonegroup = false;
+    }
     DECODE_FINISH(bl);
   }
 };
 WRITE_CLASS_ENCODER(logback_generation)
 inline std::ostream& operator <<(std::ostream& m, const logback_generation& g) {
   return m << "[" << g.gen_id << "," << g.type << ","
-	   << (g.pruned ? "PRUNED" : "NOT PRUNED") << "]";
+	   << (g.pruned ? "PRUNED" : "NOT PRUNED") << ","
+	   << (g.per_zonegroup ? "PER ZONEGROUP" : "NOT PER ZONEGROUP") << "]";
 }
 
 class logback_generations {
@@ -197,7 +205,7 @@ public:
   }
 
   asio::awaitable<void> new_backing(const DoutPrefixProvider *dpp,
-				    log_type type);
+				    log_type type, bool per_zonegroup);
 
   asio::awaitable<void> empty_to(const DoutPrefixProvider *dpp, uint64_t gen_id);
 

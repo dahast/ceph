@@ -218,7 +218,7 @@ public:
   boost::intrusive_ptr<RGWDataChangesBE> head();
   asio::awaitable<std::tuple<std::span<rgw_data_change_log_entry>,
 			     std::string>>
-  list(const DoutPrefixProvider *dpp, int shard,
+  list(const DoutPrefixProvider *dpp, const std::string& zg_id, int shard_id,
        std::span<rgw_data_change_log_entry> entries,
        std::string marker);
   asio::awaitable<void> trim_entries(const DoutPrefixProvider *dpp, int shard_id,
@@ -371,6 +371,10 @@ class RGWDataChangesLog {
   ceph::mono_time last_recovery = ceph::mono_clock::zero();
 
   const int num_shards;
+  std::string own_zonegroup_id;
+  std::vector<std::string> zonegroup_ids;
+  inline static const std::vector<std::string> no_zonegroup_ids = {""};
+
   std::string get_prefix() { return "data_log"; }
   std::string prefix;
 
@@ -398,13 +402,13 @@ class RGWDataChangesLog {
   lru_map<BucketGen, ChangeStatusPtr> changes;
   const uint64_t sem_max_keys = neorados::cls::sem_set::max_keys;
 
-  bc::flat_set<BucketGen> cur_cycle;
+  bc::flat_set<std::pair<BucketGen, std::string>> cur_cycle;
   std::vector<bc::flat_set<std::string>> semaphores{unsigned(num_shards)};
 
   ChangeStatusPtr _get_change(const rgw_bucket_shard& bs, uint64_t gen);
-  bool register_renew(BucketGen bg);
-  void update_renewed(const rgw_bucket_shard& bs,
-		      uint64_t gen,
+  bool cur_cycle_contains(const BucketGen& bg) const;
+  bool register_renew(const std::string& zg_id, BucketGen bg);
+  void update_renewed(const rgw_bucket_shard& bs, uint64_t gen,
 		      ceph::real_time expiration);
 
   std::optional<asio::steady_timer> renew_timer;
@@ -416,6 +420,7 @@ class RGWDataChangesLog {
   bool going_down() const;
   bool filter_bucket(const DoutPrefixProvider* dpp,
 		     const rgw_bucket& bucket,
+		     const std::string& zg_id,
 		     asio::yield_context y) const;
   asio::awaitable<void> renew_entries(const DoutPrefixProvider *dpp);
 
@@ -433,19 +438,26 @@ public:
 
   asio::awaitable<void> start(const DoutPrefixProvider* dpp,
 			      const rgw_pool& log_pool,
+			      std::string _own_zonegroup_id,
+			      std::vector<std::string> _zonegroup_ids,
+			      bool per_zonegroup,
 			      // Broken out for testing, in use
 			      // they're either all on (radosgw) or
 			      // all off (radosgw-admin)
 			      bool recovery, bool watch, bool renew);
 
   int start(const DoutPrefixProvider *dpp, const RGWZone* _zone,
-	    const RGWZoneParams& zoneparams, bool background_tasks) noexcept;
+	    const RGWZoneParams& zoneparams,
+	    std::string _own_zonegroup_id,
+	    std::vector<std::string> _zonegroup_ids,
+	    bool per_zonegroup,
+	    bool background_tasks) noexcept;
   asio::awaitable<bool> establish_watch(const DoutPrefixProvider* dpp,
 					std::string_view oid);
   asio::awaitable<void> process_notification(const DoutPrefixProvider* dpp,
 					     std::string_view oid);
   asio::awaitable<void> watch_loop();
-  int choose_oid(const rgw_bucket_shard& bs);
+  int choose_shard_id(const rgw_bucket_shard& bs);
   asio::awaitable<void> add_entry(const DoutPrefixProvider *dpp,
 				  const RGWBucketInfo& bucket_info,
 				  const rgw::bucket_log_layout_generation& gen,
@@ -461,14 +473,15 @@ public:
   int get_log_shard_id(rgw_bucket& bucket, int shard_id);
   asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
 			     std::string, bool>>
-  list_entries(const DoutPrefixProvider* dpp, int shard, int max_entries,
-	       std::string marker);
+  list_entries(const DoutPrefixProvider* dpp, const std::string& zg_id,
+	       int shard_id, int max_entries, std::string marker);
   asio::awaitable<std::tuple<std::vector<rgw_data_change_log_entry>,
 			     RGWDataChangesLogMarker, bool>>
-  list_entries(const DoutPrefixProvider *dpp, int max_entries,
-	       RGWDataChangesLogMarker marker);
+  list_entries(const DoutPrefixProvider *dpp, const std::string& zg_id,
+	       int max_entries, RGWDataChangesLogMarker marker);
   asio::awaitable<RGWDataChangesLogInfo>
-  get_info(const DoutPrefixProvider* dpp, int shard_id);
+  get_info(const DoutPrefixProvider* dpp, const std::string& zg_id,
+	   int shard_id);
   asio::awaitable<void>
   trim_entries(const DoutPrefixProvider *dpp, int shard_id,
 	       std::string_view marker);
@@ -479,7 +492,8 @@ public:
 		   std::optional<uint64_t>& through);
   asio::awaitable<void>
   change_format(const DoutPrefixProvider *dpp, log_type type);
-  void mark_modified(int shard_id, const rgw_bucket_shard& bs, uint64_t gen);
+  void mark_modified(const std::string& zg_id, int shard_id,
+		     const rgw_bucket_shard& bs, uint64_t gen);
   auto read_clear_modified() {
     std::unique_lock wl{modified_lock};
     decltype(modified_shards) modified;
@@ -495,10 +509,13 @@ public:
   void set_bucket_filter(decltype(bucket_filter)&& f) {
     bucket_filter = std::move(f);
   }
+
   // a marker that compares greater than any other
   std::string max_marker() const;
 
-  std::string get_oid(uint64_t gen_id, int shard_id) const;
+  std::string get_oid(uint64_t gen_id, std::string_view zg_id, int shard_id)
+    const;
+  std::string get_oid_list_prefix(uint64_t gen_id);
   std::string get_sem_set_oid(int shard_id) const;
   std::string metadata_log_oid() const;
   std::string get_trim_lock_oid() const;
@@ -507,6 +524,24 @@ public:
   int get_num_shards() const {
     return num_shards;
   }
+
+  const std::string& get_own_zonegroup_id() const {
+    return own_zonegroup_id;
+  }
+
+  const std::vector<std::string>& get_zonegroup_ids() const {
+    return zonegroup_ids;
+  }
+
+  const std::vector<std::string>& get_zonegroup_ids(bool per_zonegroup) const {
+    return per_zonegroup ? zonegroup_ids : no_zonegroup_ids;
+  }
+
+  // Resolve the effective zg_id to pass to a backend operation.
+  // Handles the non-per-zonegroup case (returns "") and the empty-zg_id
+  // fallback to own_zonegroup_id for per-zonegroup backends.
+  const std::string& effective_zg_id(const RGWDataChangesBE& be,
+                                      const std::string& zg_id) const;
 
   asio::awaitable<std::pair<bc::flat_map<std::string, uint64_t>,
 			    std::string>>
@@ -544,39 +579,43 @@ protected:
 
   CephContext* cct{r.cct()};
 
-  std::string get_oid(int shard_id) {
-    return datalog.get_oid(gen_id, shard_id);
-  }
 public:
   using entries = std::variant<std::vector<cls::log::entry>,
 			       std::deque<ceph::buffer::list>>;
 
   const uint64_t gen_id;
+  const bool per_zonegroup;
 
   RGWDataChangesBE(neorados::RADOS r,
 		   neorados::IOContext loc,
 		   RGWDataChangesLog& datalog,
-		   uint64_t gen_id)
-    : r(r), loc(std::move(loc)), datalog(datalog), gen_id(gen_id) {}
+		   uint64_t gen_id,
+		   bool per_zonegroup)
+    : r(r), loc(std::move(loc)), datalog(datalog),
+      gen_id(gen_id), per_zonegroup(per_zonegroup) {}
   virtual ~RGWDataChangesBE() = default;
 
-  virtual void prepare(ceph::real_time now, const std::string& key,
-		       ceph::buffer::list&& entry, entries& out) = 0;
-  virtual asio::awaitable<void> push(const DoutPrefixProvider *dpp, int index,
-				     entries&& items) = 0;
-  virtual void push(const DoutPrefixProvider *dpp, int index,
-		    ceph::real_time now,
-		    const std::string& key,
-		    ceph::buffer::list&& bl,
-		    asio::yield_context y) = 0;
+  virtual void
+  prepare(ceph::real_time now, const std::string& key,
+	  ceph::buffer::list&& entry, entries& out) = 0;
+  virtual asio::awaitable<void>
+  push(const DoutPrefixProvider *dpp, const std::string& zg_id, int index,
+       entries&& items) = 0;
+  virtual void
+  push(const DoutPrefixProvider *dpp, const std::string& zg_id, int index,
+       ceph::real_time now, const std::string& key,
+       ceph::buffer::list&& bl, asio::yield_context y) = 0;
   virtual asio::awaitable<std::tuple<std::span<rgw_data_change_log_entry>,
 			  std::string>>
-  list(const DoutPrefixProvider* dpp, int shard,
-       std::span<rgw_data_change_log_entry> entries, std::string marker) = 0;
+  list(const DoutPrefixProvider* dpp, const std::string& zg_id, int index,
+       std::span<rgw_data_change_log_entry> entries,
+       std::string marker) = 0;
   virtual asio::awaitable<RGWDataChangesLogInfo>
-  get_info(const DoutPrefixProvider *dpp, int index) = 0;
-  virtual asio::awaitable<void> trim(const DoutPrefixProvider *dpp, int index,
-				     std::string_view marker) = 0;
+  get_info(const DoutPrefixProvider *dpp, const std::string& zg_id,
+	   int index) = 0;
+  virtual asio::awaitable<void>
+  trim(const DoutPrefixProvider *dpp, const std::string& zg_id, int index,
+       std::string_view marker) = 0;
   virtual std::string_view max_marker() const = 0;
   // 1 on empty, 0 on non-empty, negative on error.
   virtual asio::awaitable<bool> is_empty(const DoutPrefixProvider *dpp) = 0;
