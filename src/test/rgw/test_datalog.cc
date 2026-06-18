@@ -141,6 +141,7 @@ public:
 
   boost::asio::awaitable<void> CoSetUp() override {
     co_await NeoRadosTest::CoSetUp();
+    add_io_threads(2);
     datalog = co_await create_datalog();
     co_return;
   }

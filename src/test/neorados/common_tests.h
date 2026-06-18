@@ -25,8 +25,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -160,10 +162,25 @@ expect_error_code(auto&& coro, auto ...ecs) {
 class CoroTest : public testing::Test {
 private:
   std::exception_ptr eptr;
+  std::vector<std::thread> io_threads_;
 protected:
   boost::asio::io_context asio_context; ///< The context on which the
 					///  coroutine runs.
+
+  /// \brief Add extra threads to the io_context pool
+  ///
+  /// Call from CoSetUp() or CoTestBody() when handlers must not block
+  /// the sole io_context thread (e.g. when async::use_blocked is in use).
+  /// Threads are joined automatically when the test object is destroyed.
+  void add_io_threads(int n) {
+    for (int i = 0; i < n; ++i)
+      io_threads_.emplace_back([this] { asio_context.run(); });
+  }
 public:
+  ~CoroTest() override {
+    for (auto& t : io_threads_)
+      if (t.joinable()) t.join();
+  }
   /// Final override that does nothing. Actual setup code should go in CoSetUp
   void SetUp() override final { };
   /// Final override that does nothing. Actual teardown code should go
