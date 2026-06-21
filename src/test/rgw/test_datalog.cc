@@ -401,6 +401,44 @@ CORO_TEST_F(DataLogBulky, TrimWithMaxMarker, DataLogBulky) {
   co_return;
 }
 
+// Entries written to a later generation must appear in list_entries even when
+// an earlier generation on the same shard was exhausted first.
+// Uses DataLogWatchless so every add_entry push goes straight to the log
+// without the dedup window, making the generation boundary clear-cut.
+CORO_TEST_F(DataLogWatchless, MultiGenListing, DataLogWatchless) {
+  const std::vector<BucketGen> gen0_entries{
+    {{{"", "bucket-a"}, 0}, 0},
+    {{{"", "bucket-b"}, 0}, 0},
+  };
+  const std::vector<BucketGen> gen1_entries{
+    {{{"", "bucket-c"}, 0}, 0},
+    {{{"", "bucket-d"}, 0}, 0},
+  };
+
+  // Write entries to gen 0 (fifo).
+  for (const auto& bg : gen0_entries) {
+    co_await add_entry(dpp(), bg);
+  }
+
+  // Open gen 1 (omap).  All subsequent writes go to gen 1.
+  co_await datalog->change_format(dpp(), log_type::omap);
+
+  // Write entries to gen 1.
+  for (const auto& bg : gen1_entries) {
+    co_await add_entry(dpp(), bg);
+  }
+
+  // Both generations must be visible in a single full listing.
+  auto all = co_await read_all_log(dpp());
+  for (const auto& bg : gen0_entries) {
+    EXPECT_TRUE(all.contains(bg)) << "gen 0 missing: " << bg.get_key();
+  }
+  for (const auto& bg : gen1_entries) {
+    EXPECT_TRUE(all.contains(bg)) << "gen 1 missing: " << bg.get_key();
+  }
+  co_return;
+}
+
 CORO_TEST_F(DataLogBulky, BulkySemaphoresRecovery, DataLogBulky) {
   for (const auto& bg : bulky) {
     co_await rados().execute(sem_set_oid(bg), loc(),

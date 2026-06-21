@@ -1095,8 +1095,11 @@ DataLogBackends::list(const DoutPrefixProvider *dpp, int shard,
   while (out < entries_out.end()) {
     std::unique_lock l(m);
     auto i = lower_bound(gen_id);
-    if (i == end())
+    if (i == end()) {
+      // done, no more gens
+      out_cursor.clear();
       break;
+    }
     auto be = i->second;
     l.unlock();
     gen_id = be->gen_id;
@@ -1113,12 +1116,15 @@ DataLogBackends::list(const DoutPrefixProvider *dpp, int shard,
 			   return e;
 			 });
     if (!raw_cursor.empty()) {
+      // there are entries left in this gen, we are here because entries_out
+      // is full, set new cursor and leave loop
       out_cursor = gencursor(gen_id, raw_cursor);
-    } else {
-      out_cursor.clear();
       break;
     }
+    // gen exhauste, continue with next gen
     ++gen_id;
+    // in case entries_out is full, have a correct our_coursor prepared
+    out_cursor = gencursor(gen_id, std::string{});
   }
   entries_out = entries_out.first(out - entries_out.begin());
   co_return std::make_tuple(entries_out, std::move(out_cursor));
