@@ -406,7 +406,6 @@ class RGWDataChangesLog {
   std::vector<bc::flat_set<std::string>> semaphores{unsigned(num_shards)};
 
   ChangeStatusPtr _get_change(const rgw_bucket_shard& bs, uint64_t gen);
-  bool cur_cycle_contains(const BucketGen& bg) const;
   bool register_renew(const std::string& zg_id, BucketGen bg);
   void update_renewed(const rgw_bucket_shard& bs, uint64_t gen,
 		      ceph::real_time expiration);

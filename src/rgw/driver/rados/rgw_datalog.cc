@@ -748,7 +748,7 @@ RGWDataChangesLog::process_notification(const DoutPrefixProvider* dpp,
   for (auto i = 0u; i < rc.keys.size(); ++i) {
     const auto& key = rc.keys[i];
     try {
-      if (cur_cycle_contains(BucketGen{key})) {
+      if (cur_cycle.contains(BucketGen{key})) {
 	++reply.reply_set[i];
       }
     } catch (const std::exception&) {
@@ -926,11 +926,6 @@ auto RGWDataChangesLog::_get_change(const rgw_bucket_shard& bs,
     changes.add({bs, gen}, status);
   }
   return status;
-}
-
-bool RGWDataChangesLog::cur_cycle_contains(const BucketGen& bg) const
-{
-  return cur_cycle.contains(bg);
 }
 
 bool RGWDataChangesLog::register_renew(const std::string& zg_id, BucketGen bg)
