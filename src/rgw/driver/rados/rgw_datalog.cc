@@ -138,7 +138,7 @@ void rgw_data_notify_entry::decode_json(JSONObj *obj) {
 
 class RGWDataChangesOmap final : public RGWDataChangesBE {
   using centries = std::vector<cls::log::entry>;
-  std::map<std::string, std::vector<std::string>> oids;
+  bc::flat_map<std::string, std::vector<std::string>> oids;
 
 public:
   RGWDataChangesOmap(neorados::RADOS r,
@@ -300,7 +300,7 @@ public:
 
 class RGWDataChangesFIFO final : public RGWDataChangesBE {
   using centries = std::deque<buffer::list>;
-  std::map<std::string, std::vector<std::unique_ptr<LazyFIFO>>> fifos;
+  bc::flat_map<std::string, std::vector<std::unique_ptr<LazyFIFO>>> fifos;
 
 public:
   RGWDataChangesFIFO(neorados::RADOS r,
