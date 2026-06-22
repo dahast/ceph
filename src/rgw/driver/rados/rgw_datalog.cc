@@ -960,18 +960,13 @@ int RGWDataChangesLog::get_log_shard_id(rgw_bucket& bucket, int shard_id) {
 
 bool RGWDataChangesLog::filter_bucket(const DoutPrefixProvider *dpp,
 				      const rgw_bucket& bucket,
-				      const std::string& zg_id,
+				      const std::string& /*zg_id*/,
 				      asio::yield_context y) const
 {
-  if (zg_id.empty() || zg_id == own_zonegroup_id) {
-    if (!bucket_filter) {
-      return true;
-    }
-    return bucket_filter(bucket, y, dpp);
+  if (!bucket_filter) {
+    return true;
   }
-
-  // TODO: filter entries for other zonegroups, don't filter for the moment
-  return true;
+  return bucket_filter(bucket, y, dpp);
 }
 
 std::string RGWDataChangesLog::get_oid(uint64_t gen_id,
@@ -1077,14 +1072,11 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
     change.gen = gen.gen;
     encode(change, bl);
 
+    // Failure on push is fatal if we're bypassing semaphores.
     for (auto it = active_zg.begin(); it != active_zg.end(); ++it) {
-      // Failure on push is fatal if we're bypassing semaphores.
-      if (std::next(it) != active_zg.end()) {
-        buffer::list bl_copy = bl;
-        be->push(dpp, **it, index, now, change.key, std::move(bl_copy), y);
-      } else {
-        be->push(dpp, **it, index, now, change.key, std::move(bl), y);
-      }
+      buffer::list bl_to_push =
+          (std::next(it) != active_zg.end()) ? bl : std::move(bl);
+      be->push(dpp, **it, index, now, change.key, std::move(bl_to_push), y);
     }
     return;
   }
@@ -1145,18 +1137,15 @@ void RGWDataChangesLog::add_entry(const DoutPrefixProvider* dpp,
 		     << " cur_expiration="
 		     << now + ceph::make_timespan(cct->_conf->rgw_data_log_window) << dendl;
 
+  // Failure on push isn't fatal.
   for (auto it = active_zg.begin(); it != active_zg.end(); ++it) {
-    // Failure on push isn't fatal.
     try {
-      if (std::next(it) != active_zg.end()) {
-        buffer::list bl_copy = bl;
-        be->push(dpp, **it, index, now, change.key, std::move(bl_copy), y);
-      } else {
-        be->push(dpp, **it, index, now, change.key, std::move(bl), y);
-      }
+      buffer::list bl_to_push =
+          (std::next(it) != active_zg.end()) ? bl : std::move(bl);
+      be->push(dpp, **it, index, now, change.key, std::move(bl_to_push), y);
     } catch (const std::exception& e) {
       ldpp_dout(dpp, 5) << "RGWDataChangesLog::add_entry(): Backend push failed "
-	  << "with exception: " << e.what() << dendl;
+			<< "with exception: " << e.what() << dendl;
     }
   }
 
@@ -1693,13 +1682,9 @@ RGWDataChangesLog::synthesize_entries(
   const auto& zg_ids = get_zonegroup_ids(be->per_zonegroup);
   for (auto it = zg_ids.begin(); it != zg_ids.end(); ++it) {
     try {
-      // copy batch for all but last
-      if (std::next(it) != zg_ids.end()) {
-        RGWDataChangesBE::entries batch_copy = batch;
-        co_await be->push(dpp, *it, index, std::move(batch_copy));
-      } else {
-        co_await be->push(dpp, *it, index, std::move(batch));
-      }
+      RGWDataChangesBE::entries batch_to_push =
+          (std::next(it) != zg_ids.end()) ? batch : std::move(batch);
+      co_await be->push(dpp, *it, index, std::move(batch_to_push));
     } catch (const std::exception& e) {
       push_failed = true;
       ldpp_dout(dpp, 5) << "RGWDataChangesLog::synthesize_entries(): Backend push "
