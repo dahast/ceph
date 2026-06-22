@@ -845,7 +845,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   std::unique_lock l(lock);
   decltype(cur_cycle) entries;
   entries.swap(cur_cycle);
-  for (const auto& [bg, zg_id] : entries) {
+  for (const auto& [bg, zg_ids] : entries) {
     unsigned index = choose_shard_id(bg.shard);
     semaphores[index].insert(bg.get_key());
   }
@@ -855,7 +855,7 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
   const auto expiration = now + ceph::make_timespan(cct->_conf->rgw_data_log_window);
   auto be = bes->head();
 
-  for (const auto& [bg, zg_id] : entries) {
+  for (const auto& [bg, zg_ids] : entries) {
     auto index = choose_shard_id(bg.shard);
     rgw_data_change change;
     buffer::list bl;
@@ -864,7 +864,12 @@ RGWDataChangesLog::renew_entries(const DoutPrefixProvider* dpp)
     change.timestamp = now;
     change.gen = bg.gen;
     encode(change, bl);
-    be->prepare(now, bg.shard.get_key(), std::move(bl), batches[{index, zg_id}]);
+    for (auto it = zg_ids.begin(); it != zg_ids.end(); ++it) {
+      buffer::list bl_to_prepare =
+          (std::next(it) != zg_ids.end()) ? bl : std::move(bl);
+      be->prepare(now, bg.shard.get_key(), std::move(bl_to_prepare),
+		  batches[{index, *it}]);
+    }
     update_renewed(bg.shard, bg.gen, expiration);
   }
 
@@ -925,16 +930,15 @@ auto RGWDataChangesLog::_get_change(const rgw_bucket_shard& bs,
 
 bool RGWDataChangesLog::cur_cycle_contains(const BucketGen& bg) const
 {
-  auto it = cur_cycle.lower_bound({bg, ""});
-  return it != cur_cycle.end() && it->first == bg;
+  return cur_cycle.contains(bg);
 }
 
 bool RGWDataChangesLog::register_renew(const std::string& zg_id, BucketGen bg)
 {
   std::scoped_lock l{lock};
-  bool already_present = cur_cycle_contains(bg);
-  cur_cycle.emplace(bg, zg_id);
-  return !already_present;
+  auto [it, inserted] = cur_cycle.emplace(bg, bc::flat_set<std::string>{});
+  it->second.insert(zg_id);
+  return inserted;
 }
 
 void RGWDataChangesLog::update_renewed(const rgw_bucket_shard& bs,

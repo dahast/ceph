@@ -130,7 +130,7 @@ protected:
 
   void add_to_cur_cycle(const BucketGen& bg) {
     std::unique_lock l(datalog->lock);
-    datalog->cur_cycle.emplace(bg, "");
+    datalog->cur_cycle[bg].insert("");
   }
 
   void add_to_semaphores(const BucketGen& bg) {

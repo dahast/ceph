@@ -402,7 +402,7 @@ class RGWDataChangesLog {
   lru_map<BucketGen, ChangeStatusPtr> changes;
   const uint64_t sem_max_keys = neorados::cls::sem_set::max_keys;
 
-  bc::flat_set<std::pair<BucketGen, std::string>> cur_cycle;
+  bc::flat_map<BucketGen, bc::flat_set<std::string>> cur_cycle;
   std::vector<bc::flat_set<std::string>> semaphores{unsigned(num_shards)};
 
   ChangeStatusPtr _get_change(const rgw_bucket_shard& bs, uint64_t gen);
