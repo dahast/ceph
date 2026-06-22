@@ -137,15 +137,21 @@ int RGWServices_Def::init(CephContext *cct,
 
     const RGWZoneGroup& zg = zone->get_zonegroup();
 
+    std::string own_zg_id = zg.get_id();
     std::vector<string> zonegroup_ids;
     const RGWPeriodMap& pm = zone->get_current_period().get_map();
     for (const auto& [zg_id, _zg] : pm.zonegroups) {
       zonegroup_ids.push_back(zg_id);
     }
+    if (zonegroup_ids.empty()) {
+      // Standalone / no-realm: no period map, own_zg_id is already "".
+      // Add the sentinel so add_entry and list_entries work.
+      zonegroup_ids.push_back(own_zg_id);
+    }
 
     r = datalog_rados->start(dpp, &zone->get_zone(),
 			     zone->get_zone_params(),
-			     zg.get_id(),
+			     std::move(own_zg_id),
 			     std::move(zonegroup_ids),
 			     zg.supports(rgw::zone_features::per_zonegroup_datalog),
 			     background_tasks);
